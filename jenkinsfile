@@ -1,0 +1,94 @@
+pipeline {
+    agent any
+    environment {
+        MAVEN_HOME = '/opt/apache-maven-3.9.9'
+        PATH = "${MAVEN_HOME}/bin:${env.PATH}"
+        SONARQUBE_URL = "http://localhost:9000"
+        DOCKER_REGISTRY = "localhost:5000"
+        GIT_REPO = "https://github.com/SarjakNEPAL/Deployment.git"
+    }
+    stages {
+        stage('Clean Workspace') {
+            steps {
+                deleteDir()
+            }
+        }
+        stage('Checkout Source') {
+            steps {
+                echo "Cloning repository from ${GIT_REPO}..."
+                sh 'git clone $GIT_REPO .'
+            }
+        }
+        stage('SonarQube Analysis') {
+            steps {
+                echo "Running SonarQube Scan..."
+                sh 'mvn clean verify sonar:sonar -Dsonar.projectKey=my-app -Dsonar.host.url=$SONARQUBE_URL'
+            }
+        }
+        stage('Quality Gate') {
+            steps {
+                script {
+                    def qg = sh(script: "curl -u admin:admin $SONARQUBE_URL/api/qualitygates/project_status?projectKey=my-app", returnStdout: true).trim()
+                    if (!qg.contains('"status":"OK"')) {
+                        error "SonarQube quality gate failed!"
+                    }
+                }
+            }
+        }
+        stage('Build Application') {
+            steps {
+                echo "Building the WAR file with Maven..."
+                sh 'mvn clean package'
+            }
+        }
+        stage('Build Docker Image') {
+            steps {
+                echo "Building the Docker image..."
+                sh 'docker build -t $DOCKER_REGISTRY/my_app:$BUILD_NUMBER -f docker/Dockerfile .'
+            }
+        }
+        stage('Setup Local Docker Registry') {
+            steps {
+                echo "Setting up local Docker Registry..."
+                sh '''
+                    docker run -d -p 5000:5000 --restart=always --name registry registry:2 || true
+                '''
+            }
+        }
+        stage('Push Image to Local Registry') {
+            steps {
+                echo "Pushing image to local registry..."
+                sh '''
+                    docker tag $DOCKER_REGISTRY/my_app:$BUILD_NUMBER $DOCKER_REGISTRY/my_app:$BUILD_NUMBER
+                    docker push $DOCKER_REGISTRY/my_app:$BUILD_NUMBER
+                '''
+            }
+        }
+        stage('Provision VM using Docker Swarm') {
+            steps {
+                echo "Provisioning VMs using Vagrant and Docker Swarm..."
+                sh '''
+                    cd vagrant
+                    vagrant up
+                '''
+            }
+        }
+        stage('Deploy using Ansible') {
+            agent { label 'Ansible_Host' }
+            steps {
+                echo "Deploying with Ansible..."
+                sh '''
+                    ansible-playbook -i ansible/inventory ansible/deploy.yml --extra-vars "artifact_version=$BUILD_NUMBER"
+                '''
+            }
+        }
+        stage('Setup Monitoring') {
+            steps {
+                echo "Setting up Prometheus and Grafana..."
+                sh '''
+                    docker-compose -f monitoring/docker-compose.yml up -d
+                '''
+            }
+        }
+    }
+}

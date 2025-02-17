@@ -1,0 +1,7 @@
+- hosts: all
+  become: true
+  tasks:
+    - name: Set SSH Banner
+      copy:
+        content: "Unauthorized access is prohibited!\n"
+        dest: "/etc/motd"
