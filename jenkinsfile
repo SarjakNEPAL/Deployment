@@ -1,7 +1,7 @@
 pipeline {
     agent any
     environment {
-        MAVEN_HOME = '/usr/share/maven'
+        MAVEN_HOME = '/opt/apache-maven-3.9.9'
         PATH = "${MAVEN_HOME}/bin:${env.PATH}"
         DOCKER_REGISTRY = "localhost:5000"
         GIT_REPO = "https://github.com/SarjakNEPAL/Deployment.git"
