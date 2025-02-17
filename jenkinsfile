@@ -1,94 +1,82 @@
 pipeline {
     agent any
     environment {
-        MAVEN_HOME = '/opt/apache-maven-3.9.9'
+        MAVEN_HOME = '/usr/share/maven'
         PATH = "${MAVEN_HOME}/bin:${env.PATH}"
-        SONARQUBE_URL = "http://localhost:9000"
         DOCKER_REGISTRY = "localhost:5000"
         GIT_REPO = "https://github.com/SarjakNEPAL/Deployment.git"
+        SONAR_HOST = "http://localhost:9000"
     }
     stages {
-        stage('Clean Workspace') {
-            steps {
-                deleteDir()
-            }
-        }
         stage('Checkout Source') {
             steps {
-                echo "Cloning repository from ${GIT_REPO}..."
+                echo "Cloning repository..."
                 sh 'git clone $GIT_REPO .'
             }
         }
-        stage('SonarQube Analysis') {
+
+        stage('Build with Maven') {
             steps {
-                echo "Running SonarQube Scan..."
-                sh 'mvn clean verify sonar:sonar -Dsonar.projectKey=my-app -Dsonar.host.url=$SONARQUBE_URL'
+                echo "Building application..."
+                sh 'mvn clean package'
             }
         }
+
+        stage('SonarQube Analysis') {
+            steps {
+                echo "Running SonarQube analysis..."
+                sh 'mvn sonar:sonar -Dsonar.host.url=$SONAR_HOST'
+            }
+        }
+
         stage('Quality Gate') {
             steps {
                 script {
-                    def qg = sh(script: "curl -u admin:admin $SONARQUBE_URL/api/qualitygates/project_status?projectKey=my-app", returnStdout: true).trim()
-                    if (!qg.contains('"status":"OK"')) {
-                        error "SonarQube quality gate failed!"
+                    def qg = waitForQualityGate()
+                    if (qg.status != 'OK') {
+                        error "Pipeline aborted due to Quality Gate failure"
                     }
                 }
             }
         }
-        stage('Build Application') {
+
+        stage('Docker Build & Push') {
             steps {
-                echo "Building the WAR file with Maven..."
-                sh 'mvn clean package'
-            }
-        }
-        stage('Build Docker Image') {
-            steps {
-                echo "Building the Docker image..."
+                echo "Building Docker image..."
                 sh 'docker build -t $DOCKER_REGISTRY/my_app:$BUILD_NUMBER -f docker/Dockerfile .'
+                
+                echo "Pushing Docker image to local registry..."
+                sh 'docker push $DOCKER_REGISTRY/my_app:$BUILD_NUMBER'
             }
         }
-        stage('Setup Local Docker Registry') {
+
+        stage('Deploy with Ansible') {
             steps {
-                echo "Setting up local Docker Registry..."
-                sh '''
-                    docker run -d -p 5000:5000 --restart=always --name registry registry:2 || true
-                '''
+                echo "Deploying application using Ansible..."
+                sh 'ansible-playbook -i ansible/inventory ansible/deploy.yml --extra-vars "artifact_version=$BUILD_NUMBER"'
             }
         }
-        stage('Push Image to Local Registry') {
-            steps {
-                echo "Pushing image to local registry..."
-                sh '''
-                    docker tag $DOCKER_REGISTRY/my_app:$BUILD_NUMBER $DOCKER_REGISTRY/my_app:$BUILD_NUMBER
-                    docker push $DOCKER_REGISTRY/my_app:$BUILD_NUMBER
-                '''
-            }
-        }
-        stage('Provision VM using Docker Swarm') {
-            steps {
-                echo "Provisioning VMs using Vagrant and Docker Swarm..."
-                sh '''
-                    cd vagrant
-                    vagrant up
-                '''
-            }
-        }
-        stage('Deploy using Ansible') {
-            agent { label 'Ansible_Host' }
-            steps {
-                echo "Deploying with Ansible..."
-                sh '''
-                    ansible-playbook -i ansible/inventory ansible/deploy.yml --extra-vars "artifact_version=$BUILD_NUMBER"
-                '''
-            }
-        }
+
         stage('Setup Monitoring') {
             steps {
-                echo "Setting up Prometheus and Grafana..."
-                sh '''
-                    docker-compose -f monitoring/docker-compose.yml up -d
-                '''
+                echo "Starting Prometheus & Grafana..."
+                sh 'docker-compose -f monitoring/docker-compose.yml up -d'
             }
+        }
+    }
+    
+    post {
+        success {
+            echo "Deployment Successful!"
+            mail to: 'your-email@example.com',
+                 subject: "✅ BUILD SUCCESSFUL: Build #${BUILD_NUMBER}",
+                 body: "Build #${BUILD_NUMBER} completed successfully. View details at: ${BUILD_URL}"
+        }
+        failure {
+            echo "Deployment Failed!"
+            mail to: 'your-email@example.com',
+                 subject: "❌ BUILD FAILED: Build #${BUILD_NUMBER}",
+                 body: "Build #${BUILD_NUMBER} failed. Check logs at: ${BUILD_URL}"
         }
     }
 }
