@@ -8,6 +8,11 @@ pipeline {
         SONAR_HOST = "http://localhost:9000"
     }
     stages {
+         stage('cleaning directory') {
+            steps {
+                deleteDir()
+            }
+        }
         stage('Checkout Source') {
             steps {
                 echo "Cloning repository..."
